@@ -8,6 +8,12 @@
 
 `Llama 3.2` &nbsp;·&nbsp; `WebGPU` &nbsp;·&nbsp; `4-bit (q4f16)` &nbsp;·&nbsp; `Transformers.js v3` &nbsp;·&nbsp; `FastAPI`
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-7c5cff.svg)](https://github.com/NagaYu/llama-nexus/blob/main/LICENSE)
+[![WebGPU](https://img.shields.io/badge/WebGPU-4--bit-2dd4bf.svg)](https://github.com/NagaYu/llama-nexus)
+[![Self-hosted](https://img.shields.io/badge/Self--hosted-%240.00-d946ef.svg)](https://github.com/NagaYu/llama-nexus)
+
+[**Repository**](https://github.com/NagaYu/llama-nexus) &nbsp;·&nbsp; [**Quickstart**](#-quickstart) &nbsp;·&nbsp; [**Architecture**](#️-architecture)
+
 </div>
 
 ---
