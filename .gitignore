@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# SQLite runtime data
+app/data/*.db
+app/data/*.db-shm
+app/data/*.db-wal
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local Claude Code settings
+.claude/

@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Llama-Nexus · Local WebGPU Multimodal Inference</title>
+  <meta name="description"
+        content="Self-hosted, $0.00 browser-WebGPU multimodal inference for Meta's open Llama models." />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            // Llama / Meta-AI inspired palette.
+            nexus: {
+              bg:      "#0a0a0f",
+              panel:   "#121219",
+              edge:    "#23232e",
+              violet:  "#7c5cff",
+              indigo:  "#4f46e5",
+              magenta: "#d946ef",
+              teal:    "#2dd4bf",
+              amber:   "#f59e0b",
+              text:    "#e8e8f0",
+              muted:   "#8b8b9e",
+            },
+          },
+          fontFamily: {
+            mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+          },
+          keyframes: {
+            shimmer: { "0%": { backgroundPosition: "200% 0" }, "100%": { backgroundPosition: "-200% 0" } },
+            pulseGlow: { "0%,100%": { opacity: 0.55 }, "50%": { opacity: 1 } },
+          },
+          animation: {
+            shimmer: "shimmer 2.5s linear infinite",
+            pulseGlow: "pulseGlow 2s ease-in-out infinite",
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    html, body { background: #0a0a0f; }
+    .grain { background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,.04) 1px, transparent 0); background-size: 22px 22px; }
+    .glass { background: rgba(18,18,25,.72); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+    .brand-gradient { background: linear-gradient(110deg,#7c5cff 0%,#d946ef 45%,#2dd4bf 100%); }
+    .brand-text {
+      background: linear-gradient(110deg,#a78bfa 0%,#e879f9 50%,#5eead4 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll-thin::-webkit-scrollbar-thumb { background: #2a2a38; border-radius: 8px; }
+    .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+    .typing-caret::after { content: "▋"; color: #2dd4bf; animation: pulseGlow 1s steps(2) infinite; margin-left: 1px; }
+    /* Minimal markdown styling for streamed answers */
+    .md p { margin: .5rem 0; } .md pre { background:#0a0a0f; border:1px solid #23232e; border-radius:.5rem; padding:.75rem; overflow:auto; margin:.6rem 0; }
+    .md code { font-family: ui-monospace,monospace; font-size:.85em; } .md p code { background:#1d1d28; padding:.1rem .3rem; border-radius:.3rem; }
+    .md ul { list-style: disc; margin:.5rem 0 .5rem 1.25rem; } .md ol { list-style: decimal; margin:.5rem 0 .5rem 1.25rem; }
+    .md h1,.md h2,.md h3 { font-weight:600; margin:.7rem 0 .35rem; }
+  </style>
+</head>
+
+<body class="grain min-h-screen text-nexus-text font-sans antialiased selection:bg-nexus-violet/40">
+
+  <!-- ───────────────────────────── Header ───────────────────────────── -->
+  <header class="glass sticky top-0 z-30 border-b border-nexus-edge">
+    <div class="max-w-[1500px] mx-auto px-5 py-3 flex items-center gap-4">
+      <div class="flex items-center gap-3">
+        <div class="brand-gradient w-9 h-9 rounded-xl grid place-items-center shadow-lg shadow-nexus-violet/30">
+          <span class="text-lg">🦙</span>
+        </div>
+        <div>
+          <h1 class="text-lg font-semibold leading-tight">
+            Llama<span class="brand-text">-Nexus</span>
+          </h1>
+          <p class="text-[11px] text-nexus-muted leading-tight">Local WebGPU multimodal inference · $0.00</p>
+        </div>
+      </div>
+
+      <div class="flex-1"></div>
+
+      <!-- WebGPU + device status pill -->
+      <div id="device-pill" class="hidden sm:flex items-center gap-2 text-xs px-3 py-1.5 rounded-full border border-nexus-edge bg-nexus-panel/60">
+        <span id="device-dot" class="w-2 h-2 rounded-full bg-nexus-muted"></span>
+        <span id="device-label" class="text-nexus-muted">Checking WebGPU…</span>
+      </div>
+
+      <a href="https://github.com" target="_blank" rel="noopener"
+         class="text-xs text-nexus-muted hover:text-nexus-text transition border border-nexus-edge rounded-lg px-3 py-1.5">
+        ★ Star on GitHub
+      </a>
+    </div>
+  </header>
+
+  <!-- WebGPU unsupported banner -->
+  <div id="nogpu" class="hidden bg-nexus-amber/10 border-b border-nexus-amber/30 text-nexus-amber text-sm px-5 py-2 text-center">
+    ⚠️ This browser does not expose <code>navigator.gpu</code>. Use Chrome/Edge 121+ or another WebGPU-enabled browser to run inference locally.
+  </div>
+
+  <main class="max-w-[1500px] mx-auto px-5 py-5 grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-5">
+
+    <!-- ─────────────────────── Left: control + dashboard ─────────────────────── -->
+    <aside class="space-y-4">
+
+      <!-- Model selectors -->
+      <section class="glass rounded-2xl border border-nexus-edge p-4 space-y-3">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-nexus-muted">Model Matrix</h2>
+
+        <label class="block text-xs text-nexus-muted">Chat (text / audio)
+          <select id="sel-llm" class="mt-1 w-full bg-nexus-bg border border-nexus-edge rounded-lg px-2.5 py-2 text-sm focus:border-nexus-violet outline-none">
+            <option value="onnx-community/Llama-3.2-1B-Instruct">Llama-3.2-1B-Instruct (default)</option>
+            <option value="onnx-community/Llama-3.2-3B-Instruct">Llama-3.2-3B-Instruct (heavier)</option>
+          </select>
+        </label>
+
+        <label class="block text-xs text-nexus-muted">Vision (image)
+          <select id="sel-vlm" class="mt-1 w-full bg-nexus-bg border border-nexus-edge rounded-lg px-2.5 py-2 text-sm focus:border-nexus-violet outline-none">
+            <option value="HuggingFaceTB/SmolVLM-256M-Instruct">SmolVLM-256M (default)</option>
+            <option value="HuggingFaceTB/SmolVLM-500M-Instruct">SmolVLM-500M</option>
+          </select>
+        </label>
+
+        <label class="block text-xs text-nexus-muted">Speech → text
+          <select id="sel-asr" class="mt-1 w-full bg-nexus-bg border border-nexus-edge rounded-lg px-2.5 py-2 text-sm focus:border-nexus-violet outline-none">
+            <option value="onnx-community/whisper-base">Whisper-base</option>
+            <option value="onnx-community/whisper-tiny">Whisper-tiny (faster)</option>
+          </select>
+        </label>
+
+        <label class="block text-xs text-nexus-muted">Quantization (dtype)
+          <select id="sel-dtype" class="mt-1 w-full bg-nexus-bg border border-nexus-edge rounded-lg px-2.5 py-2 text-sm focus:border-nexus-violet outline-none">
+            <option value="q4f16">q4f16 — 4-bit weights, fp16 compute (default)</option>
+            <option value="q4">q4 — 4-bit, max compatibility</option>
+          </select>
+        </label>
+
+        <button id="btn-preload"
+          class="w-full brand-gradient text-white text-sm font-medium rounded-lg py-2.5 shadow-lg shadow-nexus-violet/20 hover:opacity-90 transition disabled:opacity-40">
+          ⚡ Preload chat model
+        </button>
+      </section>
+
+      <!-- Live telemetry dashboard -->
+      <section class="glass rounded-2xl border border-nexus-edge p-4 space-y-4">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-nexus-muted">Live Telemetry</h2>
+
+        <!-- Download progress -->
+        <div>
+          <div class="flex justify-between text-xs mb-1">
+            <span class="text-nexus-muted">Model download</span>
+            <span id="dl-pct" class="font-mono text-nexus-teal">0%</span>
+          </div>
+          <div class="h-2 rounded-full bg-nexus-bg overflow-hidden border border-nexus-edge">
+            <div id="dl-bar" class="h-full brand-gradient transition-[width] duration-200" style="width:0%"></div>
+          </div>
+          <p id="dl-file" class="text-[10px] text-nexus-muted mt-1 truncate font-mono">idle</p>
+        </div>
+
+        <!-- Metric tiles -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="rounded-xl bg-nexus-bg border border-nexus-edge p-3">
+            <div class="text-[10px] uppercase tracking-wide text-nexus-muted">Tokens / sec</div>
+            <div id="m-tps" class="text-2xl font-mono font-semibold text-nexus-teal mt-1">0.0</div>
+          </div>
+          <div class="rounded-xl bg-nexus-bg border border-nexus-edge p-3">
+            <div class="text-[10px] uppercase tracking-wide text-nexus-muted">Est. VRAM</div>
+            <div id="m-vram" class="text-2xl font-mono font-semibold text-nexus-violet mt-1">0<span class="text-sm text-nexus-muted"> MB</span></div>
+          </div>
+          <div class="rounded-xl bg-nexus-bg border border-nexus-edge p-3">
+            <div class="text-[10px] uppercase tracking-wide text-nexus-muted">Tokens out</div>
+            <div id="m-toks" class="text-2xl font-mono font-semibold mt-1">0</div>
+          </div>
+          <div class="rounded-xl bg-nexus-bg border border-nexus-edge p-3">
+            <div class="text-[10px] uppercase tracking-wide text-nexus-muted">Latency</div>
+            <div id="m-lat" class="text-2xl font-mono font-semibold mt-1">0<span class="text-sm text-nexus-muted"> ms</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Prompt templates -->
+      <section class="glass rounded-2xl border border-nexus-edge p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xs font-semibold uppercase tracking-wider text-nexus-muted">Prompt Templates</h2>
+          <button id="btn-save-tpl" class="text-[11px] text-nexus-teal hover:underline">+ Save current</button>
+        </div>
+        <select id="sel-tpl" class="w-full bg-nexus-bg border border-nexus-edge rounded-lg px-2.5 py-2 text-sm outline-none focus:border-nexus-violet">
+          <option value="">— Apply a system prompt —</option>
+        </select>
+        <textarea id="sys-prompt" rows="3" placeholder="System prompt (optional)…"
+          class="w-full bg-nexus-bg border border-nexus-edge rounded-lg px-2.5 py-2 text-sm outline-none focus:border-nexus-violet resize-none scroll-thin"></textarea>
+      </section>
+    </aside>
+
+    <!-- ─────────────────────── Right: conversation ─────────────────────── -->
+    <section class="glass rounded-2xl border border-nexus-edge flex flex-col min-h-[72vh]">
+
+      <!-- transcript -->
+      <div id="transcript" class="flex-1 overflow-y-auto scroll-thin p-5 space-y-5">
+        <div id="empty-state" class="h-full grid place-items-center text-center">
+          <div class="max-w-md">
+            <div class="brand-gradient w-14 h-14 rounded-2xl grid place-items-center mx-auto mb-4 text-2xl shadow-lg shadow-nexus-violet/30">🦙</div>
+            <h3 class="text-xl font-semibold">Run Meta's open models, on <span class="brand-text">your</span> GPU.</h3>
+            <p class="text-sm text-nexus-muted mt-2">
+              4-bit quantized · 100% in-browser WebGPU · no server inference, no API keys, no data egress.
+              Attach an image, hold the mic, or just type.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- attachments preview -->
+      <div id="attachments" class="hidden px-5 pb-2 flex items-center gap-3 flex-wrap"></div>
+
+      <!-- composer -->
+      <div class="border-t border-nexus-edge p-4">
+        <div class="flex items-end gap-2">
+          <label class="cursor-pointer text-nexus-muted hover:text-nexus-teal transition p-2.5 rounded-lg border border-nexus-edge bg-nexus-bg" title="Attach image">
+            🖼️<input id="file-image" type="file" accept="image/*" class="hidden" />
+          </label>
+
+          <button id="btn-mic" title="Hold to record" class="text-nexus-muted hover:text-nexus-teal transition p-2.5 rounded-lg border border-nexus-edge bg-nexus-bg">🎙️</button>
+
+          <div class="flex-1 relative">
+            <textarea id="composer" rows="1" placeholder="Message Llama-Nexus…  (Enter to send, Shift+Enter for newline)"
+              class="w-full bg-nexus-bg border border-nexus-edge rounded-xl px-4 py-3 text-sm outline-none focus:border-nexus-violet resize-none scroll-thin max-h-40"></textarea>
+          </div>
+
+          <button id="btn-send"
+            class="brand-gradient text-white px-5 py-3 rounded-xl text-sm font-medium shadow-lg shadow-nexus-violet/20 hover:opacity-90 transition disabled:opacity-40">
+            Send
+          </button>
+          <button id="btn-stop" class="hidden bg-nexus-edge text-nexus-text px-4 py-3 rounded-xl text-sm">Stop</button>
+        </div>
+        <p id="status-line" class="text-[11px] text-nexus-muted mt-2 h-4"></p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ───────────────────────────── Controller ───────────────────────────── -->
+  <script type="module">
+    // ---- DOM helpers -------------------------------------------------------
+    const $ = (id) => document.getElementById(id);
+    const TASK = { TEXT: "text-generation", VISION: "image-text-to-text", ASR: "automatic-speech-recognition" };
+
+    const el = {
+      deviceDot: $("device-dot"), deviceLabel: $("device-label"), nogpu: $("nogpu"),
+      selLLM: $("sel-llm"), selVLM: $("sel-vlm"), selASR: $("sel-asr"), selDtype: $("sel-dtype"),
+      btnPreload: $("btn-preload"),
+      dlBar: $("dl-bar"), dlPct: $("dl-pct"), dlFile: $("dl-file"),
+      mTps: $("m-tps"), mVram: $("m-vram"), mToks: $("m-toks"), mLat: $("m-lat"),
+      selTpl: $("sel-tpl"), btnSaveTpl: $("btn-save-tpl"), sysPrompt: $("sys-prompt"),
+      transcript: $("transcript"), emptyState: $("empty-state"), attachments: $("attachments"),
+      fileImage: $("file-image"), btnMic: $("btn-mic"), composer: $("composer"),
+      btnSend: $("btn-send"), btnStop: $("btn-stop"), status: $("status-line"),
+    };
+
+    // ---- App state ---------------------------------------------------------
+    const state = {
+      history: [],            // [{role, content}]
+      pendingImage: null,     // { buffer, mimeType, previewUrl, name }
+      conversationId: null,
+      busy: false,
+      currentAssistantEl: null,
+      currentText: "",
+      vramPeak: 0,
+    };
+
+    // ---- WebGPU capability check ------------------------------------------
+    async function checkWebGPU() {
+      if (!("gpu" in navigator)) {
+        el.nogpu.classList.remove("hidden");
+        el.deviceDot.style.background = "#f59e0b";
+        el.deviceLabel.textContent = "WebGPU unavailable";
+        return false;
+      }
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) throw new Error("no adapter");
+        el.deviceDot.style.background = "#2dd4bf";
+        el.deviceLabel.textContent = "WebGPU ready";
+        el.deviceLabel.classList.replace("text-nexus-muted", "text-nexus-teal");
+        return true;
+      } catch (e) {
+        el.nogpu.classList.remove("hidden");
+        el.deviceDot.style.background = "#f59e0b";
+        el.deviceLabel.textContent = "WebGPU error";
+        return false;
+      }
+    }
+
+    // ---- Worker wiring -----------------------------------------------------
+    const worker = new Worker("/static/llama_core.js", { type: "module" });
+
+    worker.addEventListener("message", (e) => {
+      const { type, payload } = e.data;
+      switch (type) {
+        case "progress":  onProgress(payload); break;
+        case "ready":     setStatus(`✓ ${payload.modelId.split("/").pop()} ready`); break;
+        case "transcription": onTranscription(payload); break;
+        case "token":     onToken(payload); break;
+        case "metrics":   onMetrics(payload); break;
+        case "complete":  onComplete(payload); break;
+        case "vram":      onVram(payload); break;
+        case "error":     onError(payload); break;
+      }
+    });
+
+    function onProgress(p) {
+      if (p.status === "worker-ready") { setStatus("Worker online."); return; }
+      if (p.status === "progress" && p.total) {
+        const pct = Math.min(100, Math.round((p.loaded / p.total) * 100));
+        el.dlBar.style.width = pct + "%";
+        el.dlPct.textContent = pct + "%";
+        el.dlFile.textContent = `${p.file ?? ""} · ${fmtBytes(p.loaded)}/${fmtBytes(p.total)}`;
+      } else if (p.status === "done") {
+        el.dlBar.style.width = "100%"; el.dlPct.textContent = "100%";
+        el.dlFile.textContent = `${p.file ?? "done"}`;
+      } else if (p.status === "initiate") {
+        el.dlFile.textContent = `fetching ${p.file ?? ""}…`;
+      } else if (p.status === "ready") {
+        el.dlFile.textContent = "compiling WebGPU shaders…";
+      }
+    }
+
+    function onVram(p) {
+      const mb = p.bytes / (1024 * 1024);
+      el.mVram.innerHTML = `${mb.toFixed(0)}<span class="text-sm text-nexus-muted"> MB</span>`;
+    }
+
+    function onMetrics(p) {
+      el.mTps.textContent = p.tps.toFixed(1);
+      el.mToks.textContent = p.numTokens;
+      el.mLat.innerHTML = `${Math.round(p.elapsedMs)}<span class="text-sm text-nexus-muted"> ms</span>`;
+    }
+
+    function onToken(p) {
+      state.currentText += p.token;
+      if (state.currentAssistantEl) {
+        state.currentAssistantEl.querySelector(".md").innerHTML = renderMarkdown(state.currentText);
+        state.currentAssistantEl.classList.add("typing-caret");
+        autoscroll();
+      }
+    }
+
+    function onComplete(p) {
+      if (state.currentAssistantEl) state.currentAssistantEl.classList.remove("typing-caret");
+      const finalText = p.text || state.currentText;
+      state.history.push({ role: "assistant", content: finalText });
+      persistMessage({ role: "assistant", content: finalText, tokens_per_sec: p.tps });
+      finishTurn();
+      setStatus(`Done · ${p.numTokens} tokens @ ${p.tps.toFixed(1)} tok/s`);
+    }
+
+    function onTranscription(p) {
+      el.composer.value = (el.composer.value ? el.composer.value + " " : "") + p.text;
+      autosizeComposer();
+      setStatus("🎙️ Transcribed locally with Whisper.");
+      el.btnMic.classList.remove("animate-pulseGlow");
+    }
+
+    function onError(p) {
+      console.error("[worker]", p);
+      setStatus("⚠️ " + p.message);
+      finishTurn();
+      if (state.currentAssistantEl) {
+        state.currentAssistantEl.querySelector(".md").innerHTML =
+          `<span class="text-nexus-amber">Error: ${escapeHtml(p.message)}</span>`;
+        state.currentAssistantEl.classList.remove("typing-caret");
+      }
+    }
+
+    // ---- Sending a turn ----------------------------------------------------
+    function buildMessages() {
+      const msgs = [];
+      const sys = el.sysPrompt.value.trim();
+      if (sys) msgs.push({ role: "system", content: sys });
+      return msgs.concat(state.history);
+    }
+
+    async function send() {
+      if (state.busy) return;
+      const text = el.composer.value.trim();
+      if (!text && !state.pendingImage) return;
+
+      await ensureConversation();
+
+      const userContent = text || (state.pendingImage ? "Describe this image." : "");
+      state.history.push({ role: "user", content: userContent });
+      appendBubble("user", userContent, state.pendingImage?.previewUrl);
+      persistMessage({
+        role: "user", content: userContent,
+        has_image: !!state.pendingImage, has_audio: false,
+      });
+
+      el.composer.value = ""; autosizeComposer();
+      state.busy = true; toggleSending(true);
+      resetMetrics();
+
+      // Create the assistant bubble that we'll stream into.
+      state.currentText = "";
+      state.currentAssistantEl = appendBubble("assistant", "");
+
+      const dtype = el.selDtype.value;
+      const payload = {
+        task: state.pendingImage ? TASK.VISION : TASK.TEXT,
+        modelId: state.pendingImage ? el.selVLM.value : el.selLLM.value,
+        dtype,
+        messages: buildMessages(),
+        options: { max_new_tokens: 512, do_sample: false },
+      };
+
+      const transfer = [];
+      if (state.pendingImage) {
+        payload.image = { buffer: state.pendingImage.buffer, mimeType: state.pendingImage.mimeType };
+        transfer.push(state.pendingImage.buffer);
+      }
+
+      setStatus("Generating…");
+      worker.postMessage({ type: "generate", payload }, transfer);
+
+      clearAttachment(); // image buffer is transferred away; clear preview state
+    }
+
+    function finishTurn() {
+      state.busy = false;
+      state.currentAssistantEl = null;
+      toggleSending(false);
+    }
+
+    // ---- Microphone → Whisper ---------------------------------------------
+    let mediaRecorder = null, chunks = [], recording = false;
+
+    async function toggleMic() {
+      if (recording) { mediaRecorder?.stop(); return; }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        chunks = [];
+        mediaRecorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+        mediaRecorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          recording = false; el.btnMic.classList.remove("text-nexus-magenta");
+          el.btnMic.classList.add("animate-pulseGlow");
+          setStatus("Transcribing locally…");
+          const blob = new Blob(chunks, { type: "audio/webm" });
+          const audio = await decodeToMono16k(blob);
+          worker.postMessage(
+            { type: "transcribe", payload: { modelId: el.selASR.value, dtype: el.selDtype.value, audio, sampling_rate: 16000 } },
+            [audio.buffer],
+          );
+        };
+        mediaRecorder.start();
+        recording = true;
+        el.btnMic.classList.add("text-nexus-magenta");
+        setStatus("🎙️ Recording… click mic again to stop.");
+      } catch (e) {
+        setStatus("⚠️ Microphone access denied.");
+      }
+    }
+
+    async function decodeToMono16k(blob) {
+      const arr = await blob.arrayBuffer();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await ctx.decodeAudioData(arr);
+      await ctx.close();
+      const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+      const src = offline.createBufferSource();
+      src.buffer = decoded; src.connect(offline.destination); src.start();
+      const rendered = await offline.startRendering();
+      return rendered.getChannelData(0).slice(); // copy → standalone transferable buffer
+    }
+
+    // ---- Image attachment --------------------------------------------------
+    el.fileImage.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const buffer = await file.arrayBuffer();
+      const previewUrl = URL.createObjectURL(file);
+      state.pendingImage = { buffer, mimeType: file.type, previewUrl, name: file.name };
+      renderAttachment();
+      setStatus("Image attached — next message will use the vision model.");
+    });
+
+    function renderAttachment() {
+      if (!state.pendingImage) { el.attachments.classList.add("hidden"); el.attachments.innerHTML = ""; return; }
+      el.attachments.classList.remove("hidden");
+      el.attachments.innerHTML = `
+        <div class="relative">
+          <img src="${state.pendingImage.previewUrl}" class="h-16 w-16 object-cover rounded-lg border border-nexus-edge" />
+          <button id="rm-img" class="absolute -top-2 -right-2 bg-nexus-edge text-xs w-5 h-5 rounded-full">✕</button>
+        </div>
+        <span class="text-xs text-nexus-muted">${escapeHtml(state.pendingImage.name)} · routes to ${el.selVLM.value.split("/").pop()}</span>`;
+      $("rm-img").onclick = clearAttachment;
+    }
+    function clearAttachment() {
+      if (state.pendingImage?.previewUrl) URL.revokeObjectURL(state.pendingImage.previewUrl);
+      state.pendingImage = null; renderAttachment();
+    }
+
+    // ---- Transcript rendering ---------------------------------------------
+    function appendBubble(role, content, imageUrl) {
+      el.emptyState?.remove();
+      const wrap = document.createElement("div");
+      wrap.className = role === "user" ? "flex justify-end" : "flex justify-start";
+      const isUser = role === "user";
+      wrap.innerHTML = `
+        <div class="max-w-[85%] rounded-2xl px-4 py-3 border ${
+          isUser ? "bg-nexus-indigo/15 border-nexus-indigo/30" : "bg-nexus-panel border-nexus-edge"
+        }">
+          <div class="text-[10px] uppercase tracking-wide ${isUser ? "text-nexus-indigo" : "text-nexus-teal"} mb-1">
+            ${isUser ? "You" : "Llama-Nexus"}
+          </div>
+          ${imageUrl ? `<img src="${imageUrl}" class="rounded-lg mb-2 max-h-52 border border-nexus-edge" />` : ""}
+          <div class="md text-sm leading-relaxed">${renderMarkdown(content)}</div>
+        </div>`;
+      el.transcript.appendChild(wrap);
+      autoscroll();
+      return wrap.firstElementChild;
+    }
+
+    // ---- Persistence (FastAPI + SQLite) -----------------------------------
+    async function ensureConversation() {
+      if (state.conversationId) return;
+      try {
+        const res = await fetch("/api/conversations", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Session " + new Date().toLocaleString(),
+            model_id: el.selLLM.value, messages: [],
+          }),
+        });
+        state.conversationId = (await res.json()).id;
+      } catch (e) { /* offline-friendly: persistence is best-effort */ }
+    }
+    async function persistMessage(m) {
+      if (!state.conversationId) return;
+      try {
+        await fetch(`/api/conversations/${state.conversationId}/messages`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(m),
+        });
+      } catch (e) {}
+    }
+
+    // ---- Prompt templates --------------------------------------------------
+    async function loadTemplates() {
+      try {
+        const res = await fetch("/api/templates");
+        const tpls = await res.json();
+        el.selTpl.innerHTML = `<option value="">— Apply a system prompt —</option>` +
+          tpls.map((t) => `<option value="${escapeHtml(t.body)}">${escapeHtml(t.name)}</option>`).join("");
+      } catch (e) {}
+    }
+    el.selTpl.addEventListener("change", () => { if (el.selTpl.value) el.sysPrompt.value = el.selTpl.value; });
+    el.btnSaveTpl.addEventListener("click", async () => {
+      const body = el.sysPrompt.value.trim();
+      if (!body) return setStatus("Nothing to save — system prompt is empty.");
+      const name = prompt("Template name:");
+      if (!name) return;
+      try {
+        const r = await fetch("/api/templates", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, body }),
+        });
+        if (r.ok) { await loadTemplates(); setStatus("Template saved."); }
+        else setStatus("⚠️ " + (await r.json()).detail);
+      } catch (e) { setStatus("⚠️ Could not save template."); }
+    });
+
+    // ---- Small utilities ---------------------------------------------------
+    function setStatus(t) { el.status.textContent = t; }
+    function autoscroll() { el.transcript.scrollTop = el.transcript.scrollHeight; }
+    function fmtBytes(b) { if (!b) return "0B"; const u = ["B","KB","MB","GB"]; const i = Math.floor(Math.log(b)/Math.log(1024)); return (b/Math.pow(1024,i)).toFixed(1)+u[i]; }
+    function resetMetrics() { el.mTps.textContent = "0.0"; el.mToks.textContent = "0"; el.mLat.innerHTML = `0<span class="text-sm text-nexus-muted"> ms</span>`; }
+    function toggleSending(on) {
+      el.btnSend.classList.toggle("hidden", on);
+      el.btnStop.classList.toggle("hidden", !on);
+      el.btnSend.disabled = on;
+    }
+    function escapeHtml(s) { return (s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+
+    // Tiny, safe markdown subset (escape first, then format).
+    function renderMarkdown(src) {
+      if (!src) return "";
+      let h = escapeHtml(src);
+      h = h.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c.replace(/^\n/, "")}</code></pre>`);
+      h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
+      h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>");
+      h = h.replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>");
+      h = h.replace(/^\s*[-*] (.*)$/gm, "<li>$1</li>").replace(/(<li>[\s\S]*?<\/li>)/g, "<ul>$1</ul>");
+      h = h.split(/\n{2,}/).map((p) => (/^\s*<(h\d|ul|pre|li)/.test(p) ? p : `<p>${p.replace(/\n/g, "<br>")}</p>`)).join("");
+      return h;
+    }
+    function autosizeComposer() { el.composer.style.height = "auto"; el.composer.style.height = Math.min(el.composer.scrollHeight, 160) + "px"; }
+
+    // ---- Event bindings ----------------------------------------------------
+    el.btnSend.addEventListener("click", send);
+    el.btnStop.addEventListener("click", () => { worker.postMessage({ type: "interrupt" }); setStatus("Interrupting…"); });
+    el.btnMic.addEventListener("click", toggleMic);
+    el.composer.addEventListener("input", autosizeComposer);
+    el.composer.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    el.btnPreload.addEventListener("click", () => {
+      el.btnPreload.disabled = true;
+      setStatus("Preloading chat model…");
+      worker.postMessage({ type: "load", payload: { task: TASK.TEXT, modelId: el.selLLM.value, dtype: el.selDtype.value } });
+    });
+
+    // ---- Boot --------------------------------------------------------------
+    (async function boot() {
+      await checkWebGPU();
+      await loadTemplates();
+      setStatus("Ready. Pick a model and say hello.");
+    })();
+  </script>
+</body>
+</html>
